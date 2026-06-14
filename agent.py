@@ -18,8 +18,12 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import os
+import json
+from groq import Groq
+from dotenv import load_dotenv
+load_dotenv()
 from tools import search_listings, suggest_outfit, create_fit_card
-
 
 # ── session state ─────────────────────────────────────────────────────────────
 
@@ -94,7 +98,55 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     """
     # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: Parse the query using LLM
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+    parse_prompt = (
+        f"Extract search parameters from this query as JSON.\n"
+        f"Return only valid JSON with keys: description (str), size (str or null), max_price (float or null).\n"
+        f"No explanation, no markdown, just the JSON object.\n\n"
+        f"Query: \"{query}\"\n\n"
+        f"Example: {{\"description\": \"vintage graphic tee\", \"size\": \"M\", \"max_price\": 30.0}}"
+    )
+    parse_response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": parse_prompt}],
+        temperature=0.0,
+    )
+    import json
+    parsed = json.loads(parse_response.choices[0].message.content)
+    session["parsed"] = parsed
+
+    # Step 3: Search listings
+    results = search_listings(
+        description=parsed.get("description", query),
+        size=parsed.get("size"),
+        max_price=parsed.get("max_price"),
+    )
+    session["search_results"] = results
+
+    if not results:
+        session["error"] = (
+            "No listings matched your search. "
+            "Try a broader description, a different size, or raising your price limit."
+        )
+        return session
+
+    # Step 4: Select top result
+    session["selected_item"] = results[0]
+
+    # Step 5: Suggest outfit
+    session["outfit_suggestion"] = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+
+    # Step 6: Create fit card
+    session["fit_card"] = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+
     return session
 
 
